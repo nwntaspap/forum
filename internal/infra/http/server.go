@@ -3,12 +3,14 @@ package http
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/arnald/forum/internal/app"
 	"github.com/arnald/forum/internal/config"
 	"github.com/arnald/forum/internal/domain/session"
+	getuseractivity "github.com/arnald/forum/internal/infra/http/activity/getUserActivity"
 	createcategory "github.com/arnald/forum/internal/infra/http/category/createCategory"
 	deletecategory "github.com/arnald/forum/internal/infra/http/category/deleteCategory"
 	getallcategories "github.com/arnald/forum/internal/infra/http/category/getAllCategories"
@@ -89,7 +91,6 @@ func NewServer(cfg *config.ServerConfig, db *sql.DB, logger logger.Logger, appSe
 	return httpServer
 }
 
-// FOR MIDDLEWARE CHAINING.
 func middlewareChain(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) http.HandlerFunc) http.HandlerFunc {
 	for _, m := range middlewares {
 		handler = m(handler)
@@ -180,7 +181,7 @@ func (server *Server) AddHTTPRoutes() {
 			server.middleware.Authorization.Required,
 		),
 	)
-	server.router.HandleFunc(apiContext+"/topic/delete",
+	server.router.HandleFunc(apiContext+"/topics/delete",
 		middlewareChain(
 			deletetopic.NewHandler(server.appServices, server.config, server.logger).DeleteTopic,
 			server.middleware.Authorization.Required,
@@ -276,6 +277,14 @@ func (server *Server) AddHTTPRoutes() {
 		),
 	)
 
+	// Activity routes
+	server.router.HandleFunc(apiContext+"/user/activity",
+		middlewareChain(
+			getuseractivity.NewHandler(server.appServices, server.config, server.logger).GetUserActivity,
+			server.middleware.Authorization.Required,
+		),
+	)
+
 	// Notifications routes
 
 	server.router.HandleFunc(apiContext+"/notifications/stream", // get
@@ -285,7 +294,7 @@ func (server *Server) AddHTTPRoutes() {
 		),
 	)
 
-	server.router.HandleFunc(apiContext+"/otifications/unread-count", // get
+	server.router.HandleFunc(apiContext+"/notifications/unread-count", // get
 		middlewareChain(
 			getunreadcount.NewHandler(server.notifications).GetUnread,
 			server.middleware.Authorization.Required,
@@ -315,11 +324,25 @@ func (server *Server) AddHTTPRoutes() {
 }
 
 func (server *Server) ListenAndServe() {
-	corsWrappedRouter := middleware.NewCorsMiddleware(server.router)
+	wrappedRouter := middleware.NewCorsMiddleware(server.router)
+
+	if server.config.RateLimit.Enabled {
+		wrappedRouter = middleware.NewRateLimiterMiddleware(
+			wrappedRouter,
+			server.config.RateLimit.RequestsLimit,
+			server.config.RateLimit.WindowSeconds,
+			server.config.RateLimit.Cleanup,
+		)
+		server.logger.PrintInfo("Rate Limit wrapped", nil)
+		log.Printf("  2. Rate Limit middleware (limit: %d req/%ds cleanup: %s)",
+			server.config.RateLimit.RequestsLimit,
+			server.config.RateLimit.WindowSeconds,
+			server.config.RateLimit.Cleanup.String())
+	}
 
 	srv := &http.Server{
 		Addr:         server.config.Host + ":" + server.config.Port,
-		Handler:      corsWrappedRouter,
+		Handler:      wrappedRouter,
 		ReadTimeout:  server.config.ReadTimeout,
 		WriteTimeout: server.config.WriteTimeout,
 		IdleTimeout:  server.config.IdleTimeout,
@@ -329,7 +352,16 @@ func (server *Server) ListenAndServe() {
 		"port":        server.config.Port,
 		"environment": server.config.Environment,
 	})
-	err := srv.ListenAndServe()
+
+	var err error
+	if server.config.TLSCertFile != "" && server.config.TLSKeyFile != "" {
+		log.Printf("Starting HTTPS server with TLS certificates")
+		err = srv.ListenAndServeTLS(server.config.TLSCertFile, server.config.TLSKeyFile)
+	} else {
+		log.Printf("Starting HTTP server (no TLS)")
+		err = srv.ListenAndServe()
+	}
+
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		server.logger.PrintFatal(err, nil)
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/arnald/forum/cmd/client/helpers"
+	"github.com/arnald/forum/cmd/client/middleware"
 )
 
 type voteCountsResponse struct {
@@ -35,6 +36,13 @@ func (cs *ClientServer) proxyVoteRequest(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "Error creating request", http.StatusInternalServerError)
 		return
 	}
+
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	helpers.SetIPHeaders(httpReq, ip)
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -73,7 +81,7 @@ func (cs *ClientServer) CastVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs.proxyVoteRequest(w, r, backendCastVote, http.MethodPost)
+	cs.proxyVoteRequest(w, r, cs.BackendURLs.CastVoteURL(), http.MethodPost)
 }
 
 // DeleteVote proxies the vote deletion request to the backend.
@@ -83,7 +91,7 @@ func (cs *ClientServer) DeleteVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs.proxyVoteRequest(w, r, backendDeleteVote, http.MethodDelete)
+	cs.proxyVoteRequest(w, r, cs.BackendURLs.DeleteVoteURL(), http.MethodDelete)
 }
 
 // GetVoteCounts gets the current vote counts for a topic or comment.
@@ -101,7 +109,7 @@ func (cs *ClientServer) GetVoteCounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backendURL := backendGetVoteCounts + "?"
+	backendURL := cs.BackendURLs.VoteCountsURL() + "?"
 	if topicIDStr != "" {
 		backendURL += "topic_id=" + topicIDStr
 	} else {
@@ -117,6 +125,13 @@ func (cs *ClientServer) GetVoteCounts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error creating request", http.StatusInternalServerError)
 		return
 	}
+
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	helpers.SetIPHeaders(httpReq, ip)
 
 	for _, cookie := range r.Cookies() {
 		httpReq.AddCookie(cookie)

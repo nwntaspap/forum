@@ -54,7 +54,7 @@ func (cs *ClientServer) TopicsPage(w http.ResponseWriter, r *http.Request) {
 		PageSize: pageSize,
 	}
 
-	backendURL, err := createURLWithParams(backendGetTopicsDomain, topicsReq)
+	backendURL, err := createURLWithParams(cs.BackendURLs.TopicsAllURL(), topicsReq)
 	if err != nil {
 		http.Error(w, "Error creating URL params", http.StatusInternalServerError)
 		return
@@ -68,6 +68,13 @@ func (cs *ClientServer) TopicsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error creating request", http.StatusInternalServerError)
 		return
 	}
+
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	helpers.SetIPHeaders(httpReq, ip)
 
 	backendResp, err := cs.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -88,9 +95,16 @@ func (cs *ClientServer) TopicsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i := range pageData.Topics {
-		pageData.Topics[i].CategoryColor = helpers.NormalizeColor(pageData.Topics[i].CategoryColor)
-	}
+		// Normalize all category colors in the slice
+		for j := range pageData.Topics[i].CategoryColors {
+			pageData.Topics[i].CategoryColors[j] = helpers.NormalizeColor(pageData.Topics[i].CategoryColors[j])
+		}
 
+		// // Also normalize the single CategoryColor for backward compatibility (if you're still using it)
+		// if pageData.Topics[i].CategoryColor != "" {
+		// 	pageData.Topics[i].CategoryColor = helpers.NormalizeColor(pageData.Topics[i].CategoryColor)
+		// }
+	}
 	pageData.User = middleware.GetUserFromContext(r.Context())
 
 	// Create template with custom functions

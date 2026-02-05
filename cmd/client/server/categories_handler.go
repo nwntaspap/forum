@@ -36,7 +36,7 @@ func (cs *ClientServer) CategoriesPage(w http.ResponseWriter, r *http.Request) {
 		PageSize: pageSize,
 	}
 
-	backendURL, err := createURLWithParams(backendGetCategoriesDomain, categoriesRequest)
+	backendURL, err := createURLWithParams(cs.BackendURLs.CategoriesAllURL(), categoriesRequest)
 	if err != nil {
 		http.Error(w, "Error creating URL Params", http.StatusInternalServerError)
 		return
@@ -50,6 +50,13 @@ func (cs *ClientServer) CategoriesPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error making the request", http.StatusInternalServerError)
 		return
 	}
+
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	helpers.SetIPHeaders(httpReq, ip)
 
 	backendResp, err := cs.HTTPClient.Do(httpReq)
 	if err != nil {

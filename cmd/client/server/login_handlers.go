@@ -47,11 +47,6 @@ type BackendLoginResponse struct {
 
 // LoginPage handles GET requests to /login.
 func (cs *ClientServer) LoginPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// If there is a user redirect him to homepage
 	user := middleware.GetUserFromContext(r.Context())
 	if user != nil {
@@ -64,11 +59,6 @@ func (cs *ClientServer) LoginPage(w http.ResponseWriter, r *http.Request) {
 
 // LoginPost handles POST requests to /login.
 func (cs *ClientServer) LoginPost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -103,7 +93,13 @@ func (cs *ClientServer) handleEmailLogin(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
-	backendResp, backendErr := cs.loginWithBackendEmail(ctx, email, password)
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+		return
+	}
+
+	backendResp, backendErr := cs.loginWithBackendEmail(ctx, email, password, ip)
 	if backendErr != nil {
 		// Backend validation/login failed
 		data.EmailError = ""
@@ -130,7 +126,12 @@ func (cs *ClientServer) handleUsernameLogin(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
-	backendResp, backendErr := cs.loginWithBackendUsername(ctx, username, password)
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	backendResp, backendErr := cs.loginWithBackendUsername(ctx, username, password, ip)
 	if backendErr != nil {
 		// Backend validation/login failed
 		data.UsernameError = ""
@@ -148,30 +149,32 @@ func (cs *ClientServer) handleUsernameLogin(w http.ResponseWriter, r *http.Reque
 }
 
 // loginWithBackendEmail sends login request to backend email endpoint.
-func (cs *ClientServer) loginWithBackendEmail(ctx context.Context, email string, password string) (*BackendLoginResponse, error) {
+func (cs *ClientServer) loginWithBackendEmail(ctx context.Context, email string, password string, ip string) (*BackendLoginResponse, error) {
 	req := BackendLoginRequest{
 		Email:    email,
 		Password: password,
 	}
-	return cs.sendLoginRequest(ctx, backendLoginEmailURL, req)
+	return cs.sendLoginRequest(ctx, cs.BackendURLs.LoginEmailURL(), req, ip)
 }
 
 // loginWithBackendUsername sends login request to backend username endpoint.
-func (cs *ClientServer) loginWithBackendUsername(ctx context.Context, username string, password string) (*BackendLoginResponse, error) {
+func (cs *ClientServer) loginWithBackendUsername(ctx context.Context, username string, password string, ip string) (*BackendLoginResponse, error) {
 	req := BackendLoginRequest{
 		Username: username,
 		Password: password,
 	}
-	return cs.sendLoginRequest(ctx, backendLoginUsernameURL, req)
+
+	return cs.sendLoginRequest(ctx, cs.BackendURLs.LoginUsernameURL(), req, ip)
 }
 
 // sendLoginRequest sends the login request to the backend API.
-func (cs *ClientServer) sendLoginRequest(ctx context.Context, backendURL string, req BackendLoginRequest) (*BackendLoginResponse, error) {
+func (cs *ClientServer) sendLoginRequest(ctx context.Context, backendURL string, req BackendLoginRequest, ip string) (*BackendLoginResponse, error) {
 	resp, err := cs.newRequest(
 		ctx,
 		http.MethodPost,
 		backendURL,
 		req,
+		ip,
 	)
 	if err != nil {
 		defer resp.Body.Close()
@@ -204,12 +207,17 @@ func (cs *ClientServer) sendLoginRequest(ctx context.Context, backendURL string,
 
 // setSessionCookies sets the access and refresh tokens as cookies.
 func (cs *ClientServer) setSessionCookies(w http.ResponseWriter, accessToken, refreshToken string) {
+	// Use secure cookies when in production or when using HTTPS
+	isSecure := cs.Config.Environment == "production" || cs.Config.TLSCertFile != ""
+
+	log.Printf("Setting session cookies - isSecure: %v, TLSCertFile: %v", isSecure, cs.Config.TLSCertFile)
+
 	accessCookie := &http.Cookie{
 		Name:     "access_token",
 		Value:    accessToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(float64(accessTokenMaxAge) * time.Minute.Seconds()),
 	}
@@ -219,11 +227,13 @@ func (cs *ClientServer) setSessionCookies(w http.ResponseWriter, accessToken, re
 		Value:    refreshToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(float64(refreshTokenMaxAge) * time.Hour.Seconds()),
 	}
 
 	http.SetCookie(w, accessCookie)
 	http.SetCookie(w, refreshCookie)
+
+	log.Printf("Cookies set successfully - access_token MaxAge: %d, refresh_token MaxAge: %d", accessCookie.MaxAge, refreshCookie.MaxAge)
 }

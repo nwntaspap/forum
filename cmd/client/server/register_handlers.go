@@ -38,11 +38,6 @@ type BackendRegisterResponse struct {
 
 // RegisterPage handles GET requests to /register.
 func (cs *ClientServer) RegisterPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	user := middleware.GetUserFromContext(r.Context())
 	if user != nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -54,11 +49,6 @@ func (cs *ClientServer) RegisterPage(w http.ResponseWriter, r *http.Request) {
 
 // RegisterPost handles POST requests to /register.
 func (cs *ClientServer) RegisterPost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -93,10 +83,16 @@ func (cs *ClientServer) RegisterPost(w http.ResponseWriter, r *http.Request) {
 		Password: password,
 	}
 
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
-	backendResp, backendErr := cs.registerWithBackend(ctx, backendReq)
+	backendResp, backendErr := cs.registerWithBackend(ctx, backendReq, ip)
 	if backendErr != nil {
 		// Backend validation/registration failed
 		data.UsernameError = ""
@@ -105,14 +101,12 @@ func (cs *ClientServer) RegisterPost(w http.ResponseWriter, r *http.Request) {
 
 		errorMsg := backendErr.Error()
 
-		// Try to determine which field the error is about
-		switch {
-		case strings.Contains(errorMsg, "email"):
-			data.EmailError = errorMsg
-		case strings.Contains(errorMsg, "username"):
-			data.UsernameError = errorMsg
-		default:
-			data.Password = errorMsg
+		if strings.Contains(strings.ToLower(errorMsg), "username") ||
+			strings.Contains(strings.ToLower(errorMsg), "email") {
+			data.PasswordError = "This username or email is already taken. Please try another one."
+		} else {
+			// For other errors, show the actual backend error
+			data.PasswordError = errorMsg
 		}
 
 		templates.RenderTemplate(w, "register", data)
@@ -127,12 +121,13 @@ func (cs *ClientServer) RegisterPost(w http.ResponseWriter, r *http.Request) {
 // registerWithBackend sends registration request to backend API.
 // The HTTP client includes the cookie jar, so cookies will be automatically.
 // handled for all subsequent requests.
-func (cs *ClientServer) registerWithBackend(ctx context.Context, req BackendRegisterRequest) (*BackendRegisterResponse, error) {
+func (cs *ClientServer) registerWithBackend(ctx context.Context, req BackendRegisterRequest, ip string) (*BackendRegisterResponse, error) {
 	resp, err := cs.newRequest(
 		ctx,
 		http.MethodPost,
-		backendRegisterURL,
+		cs.BackendURLs.RegisterURL(),
 		req,
+		ip,
 	)
 	if err != nil {
 		defer resp.Body.Close()

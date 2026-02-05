@@ -53,7 +53,7 @@ func (cs *ClientServer) HomePage(w http.ResponseWriter, r *http.Request) {
 		Search:  "",
 	}
 
-	backendURL, err := createURLWithParams(backendGetCategoriesDomain, defaultCategoriesOptions)
+	backendURL, err := createURLWithParams(cs.BackendURLs.CategoriesAllURL(), defaultCategoriesOptions)
 	if err != nil {
 		http.Error(w, "Error creating URL params", http.StatusInternalServerError)
 		return
@@ -68,6 +68,13 @@ func (cs *ClientServer) HomePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := middleware.GetIPFromContext(r)
+	if ip == "" {
+		http.Error(w, "Error no IP found in request", http.StatusInternalServerError)
+	}
+
+	helpers.SetIPHeaders(httpReq, ip)
+
 	backendResp, err := cs.HTTPClient.Do(httpReq)
 	if err != nil {
 		http.Error(w, "Error with the response", http.StatusInternalServerError)
@@ -78,6 +85,7 @@ func (cs *ClientServer) HomePage(w http.ResponseWriter, r *http.Request) {
 	var categoryData response
 	err = helpers.DecodeBackendResponse(backendResp, &categoryData)
 	if err != nil {
+		log.Printf("Decode error: %v, Status: %d, URL: %s", err, backendResp.StatusCode, backendURL)
 		http.Error(w, "Error with decoding response into data struct", http.StatusInternalServerError)
 		return
 	}
